@@ -1,0 +1,673 @@
+```{r}
+library(tidyverse) #data tidying
+library(leaps) #data tidying
+library(ggplot2) #visualizing data
+library(corrplot) #visualizing data
+library(plyr) #data tidying
+library(dplyr) 
+library(glmnet) #for modeling
+library(caret) #for modeling
+library(xgboost) #for modeling
+library(randomForest) #for modeling
+library(pander) #data collation
+library(mice) #check missing values
+library(ggalluvial)
+library(haven)
+library(MCM)
+library(ggsci)
+library(reshape2)
+```
+
+
+```{r}
+df <- read.csv("D:/edu and dementia/analysis/charls/charls_extract.csv")
+```
+
+
+```{r}
+####preparing the df####
+##define sample size; n = 17708
+sum(df$inw1)
+df <- df[df$inw1 == 1,]
+```
+
+
+```{r}
+##exclude age >= 50; n = 13466 
+df <- df[which(df$age >= 50), ]
+```
+
+
+```{r}
+##delete na in education; n = 13460
+df <- subset(df, !(is.na(years_edu)))
+df <- subset(df, !(is.na(H_edu)))
+```
+
+```{r}
+#### construct the exposure: education mobility ####
+## highest education level of parent; n = 6848
+## delete rows which education of parents are both NA
+## raw education
+df <- subset(df, !(is.na(years_edu_f) & is.na(years_edu_m)))
+
+df$highest_education_parent<- ifelse(
+  is.na(df$years_edu_f), df$years_edu_m,
+  ifelse(
+    is.na(df$years_edu_m), df$years_edu_f,
+    ifelse(df$years_edu_f> df$years_edu_m, df$years_edu_f, df$years_edu_m)
+  )
+)
+summary(df$highest_education_parent)
+```
+
+
+```{r}
+## harmonized education
+df <- subset(df, !(is.na(H_edu_f) & is.na(H_edu_m)))
+df$H_highest_education_parent<- ifelse(
+  is.na(df$H_edu_f), df$H_edu_m,
+  ifelse(
+    is.na(df$H_edu_m), df$H_edu_f,
+    ifelse(df$H_edu_f> df$H_edu_m, df$H_edu_f, df$H_edu_m)
+  )
+)
+```
+
+
+```{r}
+# group the respondent by birth year
+df$decade <- ifelse(df$birth_year >= 1913 & df$birth_year <= 1929, 1920,
+                    ifelse(df$birth_year>= 1930 & df$birth_year <= 1939, 1930,
+                           ifelse(df$birth_year >= 1940 & df$birth_year <= 1949, 1940,
+                                  ifelse(df$birth_year >= 1950 & df$birth_year <= 1959, 1950,
+                                         1960))))
+table(df$decade)
+```
+```{r}
+###1. percentile rank of education level
+## percentile ranking of respondents' education level
+df <- df %>%
+  group_by(decade) %>%
+  mutate(percentile_rank = rank(years_edu,ties.method = c("max"))/length(years_edu))
+
+## percentile ranking of respondent' parent education level
+df <- df %>%
+  group_by(decade) %>%
+  mutate(percentile_rank_parent =  rank(highest_education_parent,ties.method = c("max"))/length(highest_education_parent))
+
+summary(df$percentile_rank)
+summary(df$percentile_rank_parent)
+```
+
+```{r}
+lm_model <- lm(df$percentile_rank ~ df$percentile_rank_parent)
+df$educational_mobility_residual <- resid(lm_model)
+summary(df$educational_mobility_residual)
+```
+
+```{r}
+###2. categorized by harmonized education level (harmonized educational mobility)
+df$educational_mobility_H <- NA
+df$educational_mobility_H[df$H_highest_education_parent == 1 & df$H_edu == 1] <- 1
+df$educational_mobility_H[df$H_highest_education_parent == 2 & df$H_edu == 2] <- 2
+df$educational_mobility_H[df$H_highest_education_parent == 3 & df$H_edu == 3] <- 3
+df$educational_mobility_H[df$H_highest_education_parent > df$H_edu] <- 4
+df$educational_mobility_H[df$H_highest_education_parent < df$H_edu] <- 5
+df$educational_mobility_H <- factor(df$educational_mobility_H,
+                                    levels = c(1, 4, 2, 5, 3),
+                                    labels = c("Stably low","Downward mobility", "Stably middle","Upward mobility","Stably high" ))
+df$educational_mobility_H <- relevel(df$educational_mobility_H, ref = "Stably low")
+tab1 <-table(df$educational_mobility_H,df$decade)
+write.csv(tab1, "D:/edu and dementia/analysis/charls/educational_mobilityH_by_decade.csv", row.names = TRUE)
+```
+
+```{r}
+###3. categorized by percentile ranking of education level
+
+summary(df$percentile_rank)
+table(df$percentile_rank)
+```
+
+```{r}
+quantile(df$percentile_rank, probs = seq(0, 1, 0.01), na.rm = TRUE)
+```
+
+
+
+```{r}
+df$education_quan <- cut(
+  df$percentile_rank,
+  breaks = quantile(df$percentile_rank, probs = c(0, 0.50, 1)),
+  labels = c(1, 2),
+  include.lowest = TRUE
+)
+```
+
+```{r}
+quantile(df$percentile_rank_parent, probs = seq(0, 1, 0.01), na.rm = TRUE)
+```
+
+```{r}
+df$education_p_quan <- cut(
+  df$percentile_rank_parent,
+  breaks = quantile(df$percentile_rank_parent, probs = c(0, 0.51, 1)),
+  labels = c(1, 2),
+  include.lowest = TRUE
+)
+
+table(df$education_quan)
+table(df$education_p_quan)
+```
+
+version 1020
+#```{r}
+df$educational_mobility_pr <- NA
+df$educational_mobility_pr[df$education_p_quan == 1 & df$education_quan == 1] <- 1
+df$educational_mobility_pr[df$education_p_quan == 2 & df$education_quan == 2] <- 2
+df$educational_mobility_pr[df$education_p_quan == 3 & df$education_quan == 3] <- 3
+df$educational_mobility_pr[as.numeric(df$education_p_quan) > as.numeric(df$education_quan)] <- 4
+df$educational_mobility_pr[as.numeric(df$education_p_quan) < as.numeric(df$education_quan)] <- 5
+df$educational_mobility_pr <- factor(df$educational_mobility_pr,
+                                     levels = c(1, 4, 2, 5, 3),
+                                     labels = c("Stably low","Downward mobility", "Stably middle","Upward mobility","Stably high" ))
+df$educational_mobility_pr <- relevel(df$educational_mobility_pr, ref = "Stably low")
+table(df$educational_mobility_pr)
+#```
+
+version 1026
+```{r}
+df$educational_mobility_pr <- NA
+df$educational_mobility_pr[df$education_p_quan == 1 & df$education_quan == 1] <- 1  # Stably low
+df$educational_mobility_pr[df$education_p_quan == 2 & df$education_quan == 2] <- 2  # Stably high
+df$educational_mobility_pr[as.numeric(df$education_p_quan) > as.numeric(df$education_quan)] <- 3  # Downward mobility
+df$educational_mobility_pr[as.numeric(df$education_p_quan) < as.numeric(df$education_quan)] <- 4  # Upward mobility
+
+df$educational_mobility_pr <- factor(df$educational_mobility_pr,
+                                     levels = c(1, 3, 4, 2),
+                                     labels = c("Stably low", "Downward mobility", "Upward mobility", "Stably high"))
+df$educational_mobility_pr <- relevel(df$educational_mobility_pr, ref = "Stably low")
+table(df$educational_mobility_pr)
+```
+
+
+sanky plot
+#```{r}
+library(ggalluvial)
+library(ggplot2)
+edu_df <- data.frame(
+  Parent = factor(df$education_p_quan, levels = c(3,2,1), labels = c("High", "Middle", "Low")),
+  Offspring = factor(df$education_quan,   levels = c(3,2,1), labels = c("High", "Middle", "Low"))
+)
+
+edu_flow <- as.data.frame(table(edu_df$Parent, edu_df$Offspring))
+colnames(edu_flow) <- c("Parent", "Offspring", "Freq")
+
+ggplot(edu_flow,
+       aes(axis1 = Parent, axis2 = Offspring, y = Freq)) +
+  geom_alluvium(aes(fill = Parent), width = 1/12) +
+  geom_stratum(width = 1/12, fill = "grey70", color = "black") +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("Parental", "Offspring"), expand = c(.05, .05)) +
+  scale_fill_manual(values = c("Low" = "#EE0000FF", "Middle" = "#3B4992FF", "High" = "#008B45FF")) +
+  labs(title = "Intergenerational Educational Mobility",
+       y = "Number of Individuals") +
+  theme_minimal()
+
+#```
+
+```{r}
+library(ggalluvial)
+library(ggplot2)
+edu_df <- data.frame(
+  Parent = factor(df$education_p_quan, levels = c(2,1), labels = c("High", "Low")),
+  Offspring = factor(df$education_quan,   levels = c(2,1), labels = c("High", "Low"))
+)
+
+edu_flow <- as.data.frame(table(edu_df$Parent, edu_df$Offspring))
+colnames(edu_flow) <- c("Parent", "Offspring", "Freq")
+
+ggplot(edu_flow,
+       aes(axis1 = Parent, axis2 = Offspring, y = Freq)) +
+  geom_alluvium(aes(fill = Parent), width = 1/12) +
+  geom_stratum(width = 1/12, fill = "grey70", color = "black") +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("Parental", "Offspring"), expand = c(.05, .05)) +
+  scale_fill_manual(values = c("Low" = "#EE0000FF", "High" = "#008B45FF")) +
+  labs(title = "Intergenerational Educational Mobility",
+       y = "Number of Individuals") +
+  theme_minimal()
+
+```
+
+```{r}
+sapply(df[, c("r1tr20", "r2tr20", "r3tr20", "r4tr20","r1ser7","r2ser7","r3ser7","r4ser7")], summary)
+```
+
+```{r}
+table(df$H_edu,exclude = NULL)
+```
+
+
+```{r}
+####construct the outcome: dementia####
+#n=11884
+df <- df %>%
+  mutate(
+    cog1 = r1tr20 + r1ser7,
+    cog2 = r2tr20 + r2ser7,
+    cog3 = r3tr20 + r3ser7,
+    cog4 = r4tr20 + r4ser7
+  )
+
+#df <- df %>%
+  #filter(rowSums(is.na(across(c(cog1, cog2, cog3, cog4)))) < 4)
+
+table(df$cog1,exclude = NULL)
+table(df$cog2,exclude = NULL)
+table(df$cog3,exclude = NULL)
+summary(df$cog4,exclude = NULL)
+```
+
+```{r}
+# Function to calculate dementia status for a given cognition variable
+classify_dementia <- function(cog_scores, edu_levels) {
+  # Initialize dementia vector with NAs
+  dementia <- rep(NA_real_, length(cog_scores))  # <-- Changed to NA_real_
+  
+  # Get unique education levels (excluding NA)
+  edu_unique <- unique(edu_levels[!is.na(edu_levels)])
+  
+  # For each education level, calculate cutoff and classify
+  for (edu_level in edu_unique) {
+    # Find indices for this education level
+    idx <- which(edu_levels == edu_level & !is.na(edu_levels))
+    
+    # Get cognition scores for this education level
+    cog_subset <- cog_scores[idx]
+    
+    # Calculate mean and SD (excluding NAs)
+    mean_cog <- mean(cog_subset, na.rm = TRUE)
+    sd_cog <- sd(cog_subset, na.rm = TRUE)
+    
+    # Calculate cutoff
+    cutoff <- mean_cog - 1.5 * sd_cog
+    
+    # Classify individuals in this education level
+    for (i in idx) {
+      if (!is.na(cog_scores[i])) {
+        dementia[i] <- ifelse(cog_scores[i] < cutoff, 1, 0)
+      }
+    }
+  }
+  
+  return(dementia)
+}
+```
+
+```{r}
+# Apply classification for each wave
+df$dementia1 <- classify_dementia(df$cog1, df$H_edu)
+df$dementia2 <- classify_dementia(df$cog2, df$H_edu)
+df$dementia3 <- classify_dementia(df$cog3, df$H_edu)
+df$dementia4 <- classify_dementia(df$cog4, df$H_edu)
+```
+
+```{r}
+# Check results
+summary(df[, c("dementia1", "dementia2", "dementia3", "dementia4")])
+
+# Optional: View distribution by education level for wave 1 as example
+table(df$H_edu, df$dementia1, useNA = "ifany")
+table(df$H_edu, df$dementia2, useNA = "ifany")
+table(df$H_edu, df$dementia3, useNA = "ifany")
+table(df$H_edu, df$dementia4, useNA = "ifany")
+prop1 <- mean(df$dementia1 == 1, na.rm = TRUE)
+prop2 <- mean(df$dementia2 == 1, na.rm = TRUE)
+prop3 <- mean(df$dementia3 == 1, na.rm = TRUE)
+prop4 <- mean(df$dementia4 == 1, na.rm = TRUE)
+prop1
+prop2
+prop3
+prop4
+```
+
+```{r}
+table(df$dementia1,exclude = NULL)
+table(df$dementia2,exclude = NULL)
+table(df$dementia3,exclude = NULL)
+table(df$dementia4,exclude = NULL)
+```
+
+```{r}
+##exclude participants with depression in baseline 2010; n = 17046
+#df <- df %>% filter(cogfunction2010_dementia != 1)
+
+```
+
+```{r}
+##exclude NA for outcomes dementia; 
+selected_columns <- c("dementia1","dementia2","dementia3","dementia4")
+summary(df[selected_columns])
+```
+
+```{r}
+#exclude NAs of dementia status
+df <- df[!is.na(df$dementia1), ]
+```
+
+
+#```{r}
+# exclude participants with dementia at baseline 2011
+df <- df[df$dementia1 != 1, ]
+
+selected_columns <- c("dementia1","dementia2","dementia3","dementia4")
+summary(df[selected_columns]) 
+#```
+
+
+```{r}
+####covariates####
+#recode variabels
+#gender: 1 is men; 2 is women
+table(df$gender, exclude = NULL)
+df$gender <- ifelse(df$gender==1, "men", "women")
+df$gender <- factor(df$gender)
+```
+
+#```{r}
+#race and hispanic
+#Generate a combined race: 0 non-hisp white, 1 non-hisp black, 2 hispanic, 3 other 
+df$Race <- ifelse(df$race == 1 & 
+                    df$hispanic == 0, 0,
+                  ifelse(df$race == 2 & 
+                           df$hispanic == 0, 1,
+                         ifelse(df$hispanic == 1, 2, 3)))
+
+df$Race <- ifelse(df$Race == 0, "Non-Hispanic White" , 
+                  ifelse(df$Race == 1, "Non-Hispanic Black",
+                         ifelse(df$Race == 2, "Hispanic","Other")))
+table(df$Race)
+#```
+
+```{r}
+#hukou
+table(df$hukou)
+#1.Agricultual hukou, 2.Non-agricultural hukou, 3.Unified residence hukou, 4.Do not have hukou
+#combine 1 and 4
+df$hukou <- ifelse(df$hukou==1|df$hukou==4, 1, 0)
+table(df$hukou)
+```
+
+
+```{r}
+#urbanicity
+df <- df %>%
+  mutate(urbanicity = case_when(
+    urbanicity == 0 ~ "urban",
+    urbanicity == 1 ~ "rural",
+    TRUE ~ NA_character_
+  ))
+table(df$urbanicity)
+df$urbanicity <- factor(df$urbanicity)
+```
+
+```{r}
+#height
+summary(df$height, exclude = NULL) #Cont
+```
+
+
+```{r}
+#labour force status
+table(df$lb_status)
+#1.Agri employed, 2.Agri self-employed, 3.Non-agri employed, 4.Non-agri self-employed
+#5.Non-agri family business, 6.Unemployed, 7.Retired, 8.Never work
+df$lb_status <- ifelse(df$lb_status==1|df$lb_status==2|df$lb_status==3|df$lb_status==4|df$lb_status==5,"employed", "other")
+table(df$lb_status,exclude = NULL)
+```
+
+```{r}
+#childhood variable
+#childhood, chil_Stress
+df <- df %>%
+  mutate(
+    chil_Stress = case_when(
+      fe_drug == 1 | ma_drug == 1 | guardians_drug == 1 | accident == 1 | missed_sch == 1 ~ "Yes",
+      fe_drug == 0 & ma_drug == 0 & guardians_drug == 0 & accident == 0 & missed_sch == 0 ~ "No",
+      TRUE ~ NA_character_
+    )
+  )
+#childhood, chil_health
+df <- df %>%
+  mutate(chil_health = case_when(
+    chil_condition %in% c(1, 2, 3) ~ "healthier",
+    chil_condition %in% c(4, 5) ~ "less_healthy",
+    TRUE ~ NA_character_  
+  ))
+#childhood, fin_status
+df <- df %>%
+  mutate(fin_status = case_when(
+    fin_status %in% c(1, 2, 3) ~ 1,
+    fin_status == 4 ~ 2,
+    TRUE ~ NA_integer_  
+  ),
+  fin_status_label = case_when(
+    fin_status == 1 ~ "same_better",
+    fin_status == 2 ~ "worse",
+    TRUE ~ NA_character_  
+  ))
+#childhood, pa_warmth
+df <- df %>%
+  mutate(
+    fe_watching_recode = case_when(
+      fe_watching %in% c(1, 2) ~ 1,
+      fe_watching %in% c(3, 4) ~ 2,
+      TRUE ~ NA_integer_
+    ),
+    fe_love_recode = case_when(
+      fe_love %in% c(1, 2) ~ 1,
+      fe_love %in% c(3, 4) ~ 2,
+      TRUE ~ NA_integer_
+    ),
+    fe_guardian_recode = case_when(
+      fe_guardian %in% c(1, 2, 3) ~ 1,
+      fe_guardian %in% c(4, 5) ~ 2,
+      TRUE ~ NA_integer_
+    ),
+    ma_guardian_recode = case_when(
+      ma_guardian %in% c(1, 2, 3) ~ 1,
+      ma_guardian %in% c(4, 5) ~ 2,
+      TRUE ~ NA_integer_
+    ),
+    pa_warmth = case_when(
+      (fe_watching_recode == 2 | fe_love_recode == 2 | fe_guardian_recode == 2 | ma_guardian_recode == 2) ~ "worse",
+      (fe_watching_recode == 1 & fe_love_recode == 1 & fe_guardian_recode == 1 & ma_guardian_recode == 1) ~ "same_better",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  select(-fe_watching_recode, -fe_love_recode, -fe_guardian_recode, -ma_guardian_recode)
+
+```
+
+
+```{r}
+#drink
+df$drink_now <- ifelse(df$drink_frq == 0, 0, 1)  
+table(df$drink_now, exclude = NULL)
+
+#smoke status
+table(df$smoke_now, exclude = NULL) #1=Yes, 0=none
+table(df$smoke_ever, exclude = NULL) #Cont
+
+df$smoke_2011 <-ifelse(df$smoke_now == 1, "current smoker",
+                       ifelse(df$smoke_now == 0 &
+                                df$smoke_ever == 1, "past smoker", "non smoker"))
+df$smoke_2011 <- factor(df$smoke_2011, levels = c("non smoker", "past smoker", "current smoker"))
+table(df$smoke_2011)
+```
+
+```{r}
+#number of chronic diseases
+#chronic diseases
+disease <- subset(df, select = c(r1arthre, #  r ever had arthritis
+                                 r1cancre, #  r ever had cancer
+                                 r1hibpe,  #  r Ever had high blood pressure
+                                 r1diabe,  #  r ever had diabetes
+                                 r1lunge,  #  r ever had lung disease
+                                 r1hearte, #  r ever had heart problem
+                                 r1stroke, #  r ever had stroke
+                                 r1psyche  #  r ever had psych problem
+))
+disease <- data.frame(disease) 
+disease$n_chronic <- rowSums(disease) 
+
+disease_numeric <- disease %>%
+  mutate(n_chronic_category = case_when(
+    n_chronic == 0 ~ "0 chronic",
+    n_chronic >= 1 ~ "chronic",
+    TRUE ~ NA_character_  
+  ))
+df <- cbind(df, n_chronic = disease_numeric$n_chronic_category)
+table(df$n_chronic)
+```
+
+
+```{r}
+# #orientation
+# summary(df$orient)
+# # df$orient_z <- scale(df$orient)
+# # summary(df$orient_z)
+# 
+# #word recall
+# summary(df$word_recall)
+# # df$word_recall_z <- scale(df$word_recall)
+# 
+# df <- df %>%
+#   group_by(decade) %>%
+#   mutate(
+#     cognitive_impairment = ifelse(
+#       orient < mean(orient, na.rm = TRUE) - 1.5 * sd(orient, na.rm = TRUE) &
+#         word_recall < mean(word_recall, na.rm = TRUE) - 1.5 * sd(word_recall, na.rm = TRUE),
+#       "Impaired", 
+#       "Normal"
+#     )
+#   ) %>%
+#   ungroup() 
+# table(df$cognitive_impairment)
+
+# df <- df %>%
+#   mutate(across(all_of(iadl_columns), as.numeric)) %>%
+#   mutate(across(all_of(badl_columns), as.numeric))
+```
+
+```{r}
+#physical activity
+#days per week 
+table(df$vigo_act, exclude = NULL)
+table(df$mode_act, exclude = NULL)
+```
+
+
+```{r}
+df$phy_act <- ifelse(
+  is.na(df$vigo_act) & is.na(df$mode_act), NA,
+  ifelse(df$vigo_act >= 3 | df$mode_act >= 3 |
+           (!is.na(df$vigo_act) & !is.na(df$mode_act) & (df$vigo_act + df$mode_act >= 3)),
+         1, 0)
+)
+
+table(df$phy_act, exclude = NULL)
+```
+
+```{r}
+#socaial activity
+table(df$soc_activity, exclude = NULL) #1=Yes, 0=none
+#BMI 1=obesity, 0=none
+df$BMI <- ifelse(df$BMI >= 28, 1, 0)  
+table(df$BMI, exclude = NULL)
+```
+
+
+```{r}
+##################################################mediator
+#marital status: 1.married; 3.partnered; 4.separated; 5.divorced; 7.widowed; 8.never married
+df$marital_status<- ifelse(df$marital_status==1|df$marital_status==3, "married/partnered", "other")
+table(df$marital_status, exclude = NULL)
+```
+
+
+```{r}
+#wealth
+#equivalized_wealth
+df$people_living_with <- as.numeric(as.character(df$people_living_with))
+df$equivalized_wealth <- df$household_wealth/sqrt(df$people_living_with)
+df$equivalized_wealth <- round(df$equivalized_wealth/1000, 2)
+summary(df$equivalized_wealth)
+df$wealth_quartile <- cut(
+  df$equivalized_wealth,
+  breaks = quantile(df$equivalized_wealth, probs = c(0, 0.5, 1), na.rm = TRUE),
+  include.lowest = TRUE,
+  labels = c("1","2")
+)
+table(df$wealth_quartile)
+table(df$wealth_quartile, useNA = "ifany")
+```
+
+
+```{r}
+# rename chil_Stress,chil_health,fin_status,pa_warmth
+df <- df %>%
+  dplyr::rename(
+    stress = chil_Stress,
+    health = chil_health,
+    financial = fin_status_label,
+    warmth = pa_warmth
+  )
+```
+
+```{r}
+#complete case
+variables <- c("age","gender","education_quan","education_p_quan","educational_mobility_pr", "lb_status","marital_status","wealth_quartile","soc_activity","drink_now","smoke_2011","phy_act","n_chronic","urbanicity","hukou","height","stress","health","financial","warmth","BMI")
+#missingness check
+missing_summary <- sapply(df[variables], function(x) {
+  percent_missing <- mean(is.na(x)) * 100
+  return(round(percent_missing, 1))
+})
+
+missing_df <- data.frame(
+  Variable = names(missing_summary),
+  Missing_Percent = missing_summary
+) %>%
+  arrange(desc(Missing_Percent))  
+
+print(missing_df)
+variables <- c("age","gender","education_quan","education_p_quan","educational_mobility_pr", "lb_status","marital_status","wealth_quartile","soc_activity","drink_now","smoke_2011","phy_act","n_chronic","urbanicity","hukou","height","stress","health","financial","warmth","BMI")
+df_complete <- df[complete.cases(df[, variables]), ]
+write.csv(df_complete, "D:/edu and dementia/analysis/charls/charls_complete.csv")
+```
+
+
+```{r}
+####imputation####
+variables <- c("age","gender","education_quan","education_p_quan","educational_mobility_pr", "lb_status","marital_status","wealth_quartile","soc_activity","drink_now","smoke_2010","phy_act","n_chronic","urbanicity","hukou","height","stress","health","financial","warmth","BMI")
+
+#covariates imputation
+df_converted <- df[, c("age","gender","education_quan","education_p_quan","educational_mobility_pr", "lb_status","marital_status","wealth_quartile","soc_activity","drink_now","smoke_2011","phy_act","n_chronic","urbanicity","hukou","height","stress","health","financial","warmth","BMI")]
+classes <- sapply(df_converted, class)
+labelled_vars <- names(classes[classes == "labelled"])
+df_converted <- df_converted %>%
+  mutate_if(names(.) %in% c("gender","education_quan","education_p_quan","educational_mobility_pr", "lb_status","marital_status","wealth_quartile","soc_activity","drink_now","smoke_2011","phy_act","n_chronic","urbanicity","hukou","stress","health","financial","warmth"), as.factor)
+set.seed(1005)
+mice_mod <- mice(df_converted, method = "cart", m =1, maxit = 5)
+imputed_data <- complete(mice_mod)
+common_cols <- intersect(names(df), names(imputed_data))
+df[common_cols] <- imputed_data[common_cols]
+```
+
+
+```{r}
+write.csv(df,"D:/edu and dementia/analysis/charls/imputed_charls_xsec.csv")
+```
+
+

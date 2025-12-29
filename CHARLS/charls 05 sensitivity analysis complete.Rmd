@@ -1,0 +1,206 @@
+
+```{r}
+library(tableone)
+library(kableExtra)
+library(CMAverse)
+library(survival)
+library(dplyr)
+library(lubridate)
+library(sjPlot)
+
+
+dfcomp <- read.csv("D:/edu and dementia/analysis/charls/charls_complete.csv")
+```
+
+
+```{r}
+#events_status
+dfcomp <- dfcomp %>%
+  mutate(
+    event_status = case_when(
+      (dementia2 == 1 | dementia3 == 1 | dementia4 == 1) ~ 1,
+      is.na(dementia2) & is.na(dementia3) & is.na(dementia4) ~ NA_real_,
+      TRUE ~ 0  
+    )
+  )
+```
+
+```{r}
+#death date, date is set to 15 (mid-month) due to unavailability
+dfcomp$death_date <- make_date(year = dfcomp$death_year, month = dfcomp$death_month, day = 15)
+```
+
+
+```{r}
+#drop rows do not have any dementia records (n = 10661)
+dfcomp_dementia <- dfcomp[!is.na(dfcomp$event_status),]
+```
+
+
+```{r}
+#NOTE:The logic behind calculating event_date is as follows: For event_status == 0 (no event), if inv_date14 is not missing, the event_date is set to inv_date14. If inv_date14 is missing but death_date exists and is earlier than the minimum of inv_date14, the event_date is set to death_date. If inv_date14 is missing and the death_date condition does not apply, the event_date is imputed using the median of inv_date14 from available non-missing values. If neither condition applies, the event_date is set to NA. For event_status == 1 (event occurred), if dementia_2012 == 1, the event_date is set to inv_date11; if dementia_2014 == 1, the event_date is set to inv_date12; if dementia_2016 == 1, the event_date is set to inv_date13; and if dementia_2018 == 1, the event_date is set to inv_date14. If none of these conditions apply, the event_date is set to NA. This approach ensures the event_date is logically determined based on available data and handles missing values appropriately. Temporary columns used for the calculation of the minimum and median of inv_date14 are removed at the end.
+```
+
+```{r}
+dfcomp_dementia <- dfcomp_dementia %>%
+  mutate(
+    min_riwmid_w4 = min(riwmid_w4, na.rm = TRUE),
+    median_riwmid_w4 = median(riwmid_w4, na.rm = TRUE),
+    event_date = case_when(
+      event_status == 0 & !is.na(riwmid_w4) ~ as.Date(riwmid_w4, origin = "1960-01-01"),  
+      event_status == 0 & !is.na(death_date) & death_date < min_riwmid_w4 ~ as.Date(death_date, origin = "1960-01-01"),  
+      event_status == 0 & is.na(riwmid_w4) ~ as.Date(median_riwmid_w4, origin = "1960-01-01"),  
+      event_status == 0 ~ as.Date(NA),  
+      event_status == 1 ~ as.Date(
+        coalesce(
+          ifelse(dementia2 == 1, riwmid_w2, NA), 
+          ifelse(dementia3 == 1, riwmid_w3, NA), 
+          ifelse(dementia4 == 1, riwmid_w4, NA)
+        ), origin = "1960-01-01"
+      ),
+      TRUE ~ as.Date(NA)
+    )
+  ) %>%
+  dplyr::select(-min_riwmid_w4, -median_riwmid_w4)
+
+
+dfcomp_dementia <- dfcomp_dementia %>%
+  mutate(
+    event_time = as.numeric(difftime(event_date, as.Date(riwmid_w1, origin = "1960-01-01"), units = "days")) / 30.44)
+```
+
+```{r}
+#reference group
+dfcomp_dementia$educational_mobility_pr <- factor(dfcomp_dementia$educational_mobility_pr, 
+                                    levels = c("Stably low","Downward mobility", "Upward mobility", "Stably high"))
+dfcomp_dementia$educational_mobility_pr <- relevel(dfcomp_dementia$educational_mobility_pr, ref = "Stably low")
+dfcomp_dementia$gender <- relevel(factor(dfcomp_dementia$gender), ref = "men")
+dfcomp_dementia$wealth_quartile <- relevel(factor(dfcomp_dementia$wealth_quartile), ref = "1")
+dfcomp_dementia$n_chronic <- relevel(factor(dfcomp_dementia$n_chronic), ref = "0 chronic")
+dfcomp_dementia$soc_activity <- relevel(factor(dfcomp_dementia$soc_activity), ref = "0")
+dfcomp_dementia$phy_act <- relevel(factor(dfcomp_dementia$phy_act), ref = "0")
+dfcomp_dementia$drink_now <- relevel(factor(dfcomp_dementia$drink_now), ref = "0")
+dfcomp_dementia$smoke_2011 <- relevel(factor(dfcomp_dementia$smoke_2011), ref = "non smoker")
+dfcomp_dementia$education_quan <- relevel(factor(dfcomp_dementia$education_quan), ref = "1")
+dfcomp_dementia$education_p_quan <- relevel(factor(dfcomp_dementia$education_p_quan), ref = "1")
+dfcomp_dementia$hukou <- factor(dfcomp_dementia$hukou,
+                   levels = c(1, 0),
+                   labels = c("agri", "non-agri"))
+dfcomp_dementia$hukou <- relevel(dfcomp_dementia$hukou, ref = "agri")
+```
+
+
+```{r}
+table(dfcomp_dementia$dementia1,exclude = NULL)
+```
+
+```{r}
+table(dfcomp_dementia$education_quan,dfcomp_dementia$years_edu,exclude = NULL)
+table(dfcomp_dementia$education_p_quan,dfcomp_dementia$highest_education_parent,exclude = NULL)
+```
+
+
+```{r}
+####model
+library(survival)
+library(survminer)
+```
+
+
+```{r}
+####cox####
+surv_obj <- Surv(time = dfcomp_dementia$event_time, event = dfcomp_dementia$event_status)
+model_comp <- coxph(surv_obj ~ educational_mobility_pr + age + gender + hukou + 
+                          lb_status + marital_status + wealth_quartile + 
+                          soc_activity + drink_now + smoke_2011 + phy_act + n_chronic + urbanicity + height + stress + health + financial + warmth, data = dfcomp_dementia)
+summary(model_comp)
+exp(confint(model_comp))
+```
+
+
+```{r}
+#forest plot
+model_results <- broom::tidy(model_comp, conf.int = TRUE)
+
+target_var <- model_results %>%
+  filter(grepl("educational_mobility_pr", term)) %>%  
+  mutate(
+    hr = exp(estimate),  
+    hr_low = exp(conf.low),  
+    hr_high = exp(conf.high)  
+  ) %>%
+  select(term, hr, hr_low, hr_high, p.value)  
+print(target_var)
+```
+
+```{r}
+# Check the structure of target_var after all transformations
+print(target_var)
+
+# Or for more detail:
+str(target_var)
+```
+
+```{r}
+ref_row <- data.frame(
+  term = "educational_mobility_prStably low (ref)", 
+  hr = 1,                   
+  hr_low = 1,                
+  hr_high = 1,               
+  p.value = NA               
+)
+target_var <- bind_rows(ref_row, target_var)
+
+target_var <- target_var %>%
+  mutate(term = gsub("educational_mobility_pr", "", term))  
+
+target_var <- target_var %>%
+  mutate(term = case_when(
+    term == "Stably low (ref)" ~ "Stably low (ref)",  
+    term == "Downward mobility" ~ "Downwardly mobile", 
+    term == "Upward mobility" ~ "Upwardly mobile",      
+    #term == "Stably middle" ~ "Stably middle",
+    term == "Stably high" ~ "Stably high",
+    TRUE ~ term  
+  )) %>%
+  mutate(term = factor(term, levels =rev( c(
+    "Stably low (ref)",          
+    "Downwardly mobile",    
+    #"Stably middle",        
+    "Upwardly mobile",      
+    "Stably high"           
+  ))))
+```
+
+
+```{r}
+forest_plot <- ggplot(target_var, aes(x = hr, y = term)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "black") +  
+  geom_errorbarh(aes(xmin = hr_low, xmax = hr_high), 
+                 height = 0.2, color = "#007F6F", size = 1.5) +
+  geom_point(aes(size = 2), color = "#007F6F") +  
+  #scale_x_log10(  
+    #breaks = c(0.5, 1, 2), 
+    #labels = c(0.5, 1, 2)
+  #) +
+  scale_x_continuous(
+    limits = c(0.1, 2),
+    breaks = c(0.5, 1, 1.5,2)) +
+  coord_trans(x = "log10") +
+  labs(
+    x = "Hazard Ratio (95% CI)",
+    y = NULL
+  ) +
+  theme_bw() + 
+  ggtitle("China") +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold", color = "black"),
+    axis.text = element_text(color = "black", size = 12),  
+    axis.title = element_text(color = "black", size = 13), 
+    panel.background = element_rect(fill = "white"),  
+    panel.grid = element_blank(),  
+    legend.position = "none" 
+  ) 
+
+print(forest_plot)
+```

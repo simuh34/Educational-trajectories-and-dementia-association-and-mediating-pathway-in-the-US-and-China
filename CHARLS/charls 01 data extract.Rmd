@@ -1,0 +1,167 @@
+```{r}
+library(tidyverse) #data tidying
+library(leaps) #data tidying
+library(ggplot2) #visualizing data
+library(corrplot) #visualizing data
+library(plyr) #data tidying
+library(dplyr) 
+library(glmnet) #for modeling
+library(caret) #for modeling
+library(xgboost) #for modeling
+library(randomForest) #for modeling
+library(pander) #data collation
+library(mice) #check missing values
+library(ggalluvial)
+library(haven)
+library(MCM)
+library(ggsci)
+library(reshape2)
+```
+
+
+```{r}
+# insert dataset
+data <- read_dta("D:/dataset/charls/H_CHARLS_D_Data.dta")
+```
+
+
+```{r}
+# select variables
+data01a <- subset(data, select = c(
+  inw1,
+  r1iwstat, r2iwstat, r3iwstat, r4iwstat,#wave status, interview status
+  r1wtresp,#weight
+  ID, #personel id
+  r1iwm,r2iwm,r3iwm,r4iwm,r1iwy,r2iwy,r3iwy,r4iwy,#interview time
+  radmonth,radyear,#death month and year
+  rabyear,#birth year
+  r1agey,#age at interview
+  ragender,#sex
+  hh1atotb, #HHold total wealth
+  h1hhresp, #respondents in household
+  r1lbrf_c,#labour force status
+  r1mstat,#marital status
+  r1hibpe, r1diabe, r1cancre, r1lunge, r1hearte, r1stroke, r1psyche, r1arthre,#chronic diseases
+  r1smokev, r1smoken,#ever and current smoking
+  r1drinkl, r1drinkr_c,#drinking last year and number of drinking per day
+  r1mdactx_c,#days/wk moderate physical activity or exercise 
+  r1vgactx_c,# days/wk light physical activity or exercise
+  raeduc_c, raeducl,#edu
+  rameduc_c,rafeduc_c,ramomeducl,radadeducl,#mother and father edu
+  r1mbmi,#bmi
+  r1socwk,#r participate in social activities last month
+  r1hukou,#hukou
+  h1rural,#live in rural/urban
+  ramomoccup_c,radadoccup_c,#mother and father occupation (non- or agri)
+  r1mheight,#height measurement in meters
+  #childhood variables,Childhood/Lifetime Stressful Events
+  ramomdrug, # female guardian had an alcohol and/or drug issue
+  radaddrug, # people living in hh when 10,male guardian had an alcohol and/or drug issue
+  rapadrug, #r guardians had an alcohol and/or drug issue
+  r1lifethe, # r ever experienced serious traffic accident/inj
+  ramischlth, # r missed school for 1+ mo due to health
+  #childhood variables,Self-Rated Childhood Health and Finances
+  rahltcom, # health condition compared to other children
+  rafinacom, # financial status compared to avg family in same
+  #childhood variables,Parental Warmth
+  ramomeft, # female guardian put effort into watching
+  ramomatt_c, # r received female guardian's love and affection
+  ramomgrela, # r good relationship with female guardian
+  radadgrela, # r good relationship with male guardian
+  r1cesd10 # cesd 10-score
+))
+```
+
+
+```{r}
+data01b <- subset(data, select = c(ID,
+                                   r1tr20,r2tr20,r3tr20,#total word recall
+                                   r1ser7,r2ser7,r3ser7,r4ser7#serial 7
+                                   ))
+```
+
+
+```{r}
+#impute tr20 2018
+data01bcog <- read.csv("D:/dataset/charls/charls_2018_cognition.csv")
+data01bcog$r4tr20 <- data01bcog$r4imrc_eqt + data01bcog$r4dlrc_eqt
+
+data01b$ID <- as.numeric(data01b$ID)
+data01bcog$ID <- as.numeric(data01bcog$ID)
+data01b <- inner_join(data01b, data01bcog, by =  "ID")
+```
+
+```{r}
+sapply(data01b[, c("r1tr20", "r2tr20", "r3tr20", "r4tr20")], summary)
+```
+
+```{r}
+data01a$ID <- as.numeric(data01a$ID)
+data01 <- inner_join(data01a, data01b, by = "ID")
+
+```
+
+```{r}
+#interview time
+#calculate the precise interview time for each wave in years
+#combine the interview year (rXiwy) and the interview month (rXiwm) 
+#by converting the month to a fraction of a year (month / 12)
+#this results in a more accurate representation of the interview date.
+data01$riwmid_w1<-  data01$r1iwy + data01$r1iwm/12
+data01$riwmid_w2<-  data01$r2iwy + data01$r2iwm/12
+data01$riwmid_w3<-  data01$r3iwy + data01$r3iwm/12
+data01$riwmid_w4<-  data01$r4iwy + data01$r4iwm/12
+```
+
+```{r}
+#rename variables
+data01 <- data01 %>% dplyr::rename(age = r1agey, 
+                           gender = ragender,
+                           death_month = radmonth,
+                           death_year = radyear,
+                           birth_year = rabyear,
+                           household_wealth = hh1atotb,
+                           people_living_with = h1hhresp,
+                           lb_status = r1lbrf_c,
+                           marital_status = r1mstat,
+                           smoke_ever = r1smokev,
+                           smoke_now = r1smoken,
+                           drink_ever = r1drinkl,
+                           drink_frq = r1drinkr_c,
+                           mode_act = r1mdactx_c,
+                           vigo_act = r1vgactx_c,
+                           years_edu = raeduc_c,
+                           years_edu_m = rameduc_c,
+                           years_edu_f = rafeduc_c,
+                           hukou = r1hukou, 
+                           urbanicity = h1rural, 
+                           BMI = r1mbmi,
+                           soc_activity = r1socwk,
+                           H_edu = raeducl,
+                           H_edu_m = ramomeducl,
+                           H_edu_f = radadeducl,
+                           m_occupation = ramomoccup_c,
+                           f_occupation = radadoccup_c,
+                           height = r1mheight,
+                           s_weight = r1wtresp,
+                           fe_drug = ramomdrug,
+                           ma_drug = radaddrug,
+                           guardians_drug = rapadrug,
+                           accident     = r1lifethe,
+                           missed_sch   = ramischlth,
+                           chil_condition = rahltcom,
+                           fin_status   = rafinacom,
+                           fe_watching  = ramomeft,
+                           fe_love      = ramomatt_c,
+                           fe_guardian  = ramomgrela,
+                           ma_guardian  = radadgrela,
+                           cesd2010 = r1cesd10
+                           )
+```
+"drink_now",  "num_drink", "smoke_now","num_smoke"
+
+```{r}
+####Extract data for next steps####
+write.csv(data01, "D:/edu and dementia/analysis/charls/charls_extract.csv")
+```
+

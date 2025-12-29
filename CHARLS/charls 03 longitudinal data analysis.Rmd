@@ -1,0 +1,769 @@
+
+```{r}
+library(tableone)
+library(kableExtra)
+library(CMAverse)
+library(survival)
+library(dplyr)
+library(lubridate)
+library(sjPlot)
+
+
+df <- read.csv("D:/edu and dementia/analysis/charls/imputed_charls.csv")
+```
+
+
+```{r}
+#events_status
+df <- df %>%
+  mutate(
+    event_status = case_when(
+      (dementia2 == 1 | dementia3 == 1 | dementia4 == 1) ~ 1,
+      is.na(dementia2) & is.na(dementia3) & is.na(dementia4) ~ NA_real_,
+      TRUE ~ 0  
+    )
+  )
+```
+
+```{r}
+#death date, date is set to 15 (mid-month) due to unavailability
+df$death_date <- make_date(year = df$death_year, month = df$death_month, day = 15)
+```
+
+
+```{r}
+#drop rows do not have any dementia records (n = 10661)
+df_dementia <- df[!is.na(df$event_status),]
+```
+
+
+```{r}
+#NOTE:The logic behind calculating event_date is as follows: For event_status == 0 (no event), if inv_date14 is not missing, the event_date is set to inv_date14. If inv_date14 is missing but death_date exists and is earlier than the minimum of inv_date14, the event_date is set to death_date. If inv_date14 is missing and the death_date condition does not apply, the event_date is imputed using the median of inv_date14 from available non-missing values. If neither condition applies, the event_date is set to NA. For event_status == 1 (event occurred), if dementia_2012 == 1, the event_date is set to inv_date11; if dementia_2014 == 1, the event_date is set to inv_date12; if dementia_2016 == 1, the event_date is set to inv_date13; and if dementia_2018 == 1, the event_date is set to inv_date14. If none of these conditions apply, the event_date is set to NA. This approach ensures the event_date is logically determined based on available data and handles missing values appropriately. Temporary columns used for the calculation of the minimum and median of inv_date14 are removed at the end.
+```
+
+```{r}
+df_dementia <- df_dementia %>%
+  mutate(
+    min_riwmid_w4 = min(riwmid_w4, na.rm = TRUE),
+    median_riwmid_w4 = median(riwmid_w4, na.rm = TRUE),
+    event_date = case_when(
+      event_status == 0 & !is.na(riwmid_w4) ~ as.Date(riwmid_w4, origin = "1960-01-01"),  
+      event_status == 0 & !is.na(death_date) & death_date < min_riwmid_w4 ~ as.Date(death_date, origin = "1960-01-01"),  
+      event_status == 0 & is.na(riwmid_w4) ~ as.Date(median_riwmid_w4, origin = "1960-01-01"),  
+      event_status == 0 ~ as.Date(NA),  
+      event_status == 1 ~ as.Date(
+        coalesce(
+          ifelse(dementia2 == 1, riwmid_w2, NA), 
+          ifelse(dementia3 == 1, riwmid_w3, NA), 
+          ifelse(dementia4 == 1, riwmid_w4, NA)
+        ), origin = "1960-01-01"
+      ),
+      TRUE ~ as.Date(NA)
+    )
+  ) %>%
+  dplyr::select(-min_riwmid_w4, -median_riwmid_w4)
+
+
+df_dementia <- df_dementia %>%
+  mutate(
+    event_time = as.numeric(difftime(event_date, as.Date(riwmid_w1, origin = "1960-01-01"), units = "days")) / 30.44)
+```
+
+```{r}
+#reference group
+df_dementia$educational_mobility_pr <- factor(df_dementia$educational_mobility_pr, 
+                                    levels = c("Stably low","Downward mobility", "Upward mobility", "Stably high"))
+df_dementia$educational_mobility_pr <- relevel(df_dementia$educational_mobility_pr, ref = "Stably low")
+df_dementia$gender <- relevel(factor(df_dementia$gender), ref = "men")
+df_dementia$wealth_quartile <- relevel(factor(df_dementia$wealth_quartile), ref = "1")
+df_dementia$n_chronic <- relevel(factor(df_dementia$n_chronic), ref = "0 chronic")
+df_dementia$soc_activity <- relevel(factor(df_dementia$soc_activity), ref = "0")
+df_dementia$phy_act <- relevel(factor(df_dementia$phy_act), ref = "0")
+df_dementia$drink_now <- relevel(factor(df_dementia$drink_now), ref = "0")
+df_dementia$smoke_2011 <- relevel(factor(df_dementia$smoke_2011), ref = "non smoker")
+df_dementia$education_quan <- relevel(factor(df_dementia$education_quan), ref = "1")
+df_dementia$education_p_quan <- relevel(factor(df_dementia$education_p_quan), ref = "1")
+df_dementia$hukou <- factor(df_dementia$hukou,
+                   levels = c(1, 0),
+                   labels = c("agri", "non-agri"))
+df_dementia$hukou <- relevel(df_dementia$hukou, ref = "agri")
+```
+
+```{r}
+write.csv(df_dementia, "D:/edu and dementia/analysis/charls/df_dementia_lowhigh.csv", row.names = FALSE)
+```
+
+```{r}
+table(df_dementia$dementia1,exclude = NULL)
+```
+
+```{r}
+table(df_dementia$education_quan,df_dementia$years_edu,exclude = NULL)
+table(df_dementia$education_p_quan,df_dementia$highest_education_parent,exclude = NULL)
+```
+
+```{r}
+
+olow <- sum(table(df_dementia$education_quan, df_dementia$years_edu, exclude = NULL)["1", ])
+ohigh <- sum(table(df_dementia$education_quan, df_dementia$years_edu, exclude = NULL)["2", ])
+olowprop <- olow / sum(table(df_dementia$education_quan, df_dementia$years_edu, exclude = NULL)) * 100
+ohighprop <- ohigh / sum(table(df_dementia$education_quan, df_dementia$years_edu, exclude = NULL)) * 100
+plow <- sum(table(df_dementia$education_p_quan, df_dementia$highest_education_parent, exclude = NULL)["1", ])
+phigh <- sum(table(df_dementia$education_p_quan, df_dementia$highest_education_parent, exclude = NULL)["2", ])
+plowprop <- plow / sum(table(df_dementia$education_p_quan, df_dementia$highest_education_parent, exclude = NULL)) * 100
+phighprop <- phigh / sum(table(df_dementia$education_p_quan, df_dementia$highest_education_parent, exclude = NULL)) * 100
+sprintf("%s (%.2f%%)", formatC(olow, format = "d", big.mark = ","), olowprop)
+sprintf("%s (%.2f%%)", formatC(ohigh, format = "d", big.mark = ","), ohighprop)
+sprintf("%s (%.2f%%)", formatC(plow, format = "d", big.mark = ","), plowprop)
+sprintf("%s (%.2f%%)", formatC(phigh, format = "d", big.mark = ","), phighprop)
+
+
+```
+
+
+```{r}
+####table
+t1 = CreateTableOne(vars = c("age","gender","education_quan","education_p_quan","educational_mobility_pr", "lb_status","marital_status","drink_now","smoke_2011","wealth_quartile","soc_activity","phy_act","n_chronic","hukou","urbanicity","height","stress","health","financial","warmth"),   
+                    data=df_dementia)
+print(t1, showAllLevels = TRUE, catDigits=2, printToggle = FALSE) %>% 
+  knitr::kable(caption = "Descriptive charateristics by intergenerational educational trajectories",
+               booktabs = T, linesep = '') %>% 
+  kable_styling(latex_options = "hold_position")
+table_data <- as.data.frame(print(t1, showAllLevels = TRUE, catDigits = 2, printToggle = FALSE))
+table_data <- cbind(Variable = rownames(table_data), table_data)  
+rownames(table_data) <- NULL
+write.csv(table_data, "D:/edu and dementia/analysis/charls/table1_longi_lowhigh.csv", row.names = FALSE)
+```
+
+
+age and height: median [IQR]
+```{r}
+summary(df_dementia$age)
+summary(df_dementia$height)
+
+#age: 59.00 [55.00, 65.00]
+#height: 1.59 [1.53, 1.65]
+```
+
+
+```{r}
+####model
+library(survival)
+library(survminer)
+```
+
+```{r}
+####Logistic Regression Model####
+logistic_model <- glm(event_status ~ 
+                        educational_mobility_pr + age + gender + hukou + 
+                          lb_status + marital_status + wealth_quartile + 
+                          soc_activity + drink_now + smoke_2011 + phy_act + n_chronic + urbanicity + height + stress + health + financial + warmth, data = df_dementia,
+                      family = binomial(link = "logit"))
+
+# Check Logistic model results
+cat("\n========== Logistic Regression Model Results ==========\n")
+print(summary(logistic_model))
+```
+
+
+```{r}
+# Generate table with sjPlot
+tab_model(logistic_model)
+```
+
+```{r}
+####forest glm####
+# Extract educational mobility results from Logistic model
+logistic_results <- tidy(logistic_model, conf.int = TRUE, exponentiate = TRUE) %>%
+  filter(term %in% c(
+    "educational_mobility_prDownward mobility",
+    #"educational_mobility_prStably middle",
+    "educational_mobility_prUpward mobility",
+    "educational_mobility_prStably high"
+  )) %>%
+  mutate(term = recode(term,
+                       "educational_mobility_prDownward mobility" = "Downwardly mobile",
+                       #"educational_mobility_prStably middle" = "Stably middle",
+                       "educational_mobility_prUpward mobility" = "Upwardly mobile",
+                       "educational_mobility_prStably high" = "Stably high"
+  ))
+
+# Add reference group
+logistic_results <- bind_rows(
+  tibble(term = "Stably low (ref)", estimate = 1, conf.low = 1, conf.high = 1),
+  logistic_results
+) %>%
+  mutate(term = factor(term, levels = rev(c(
+    "Stably low (ref)", "Downwardly mobile", 
+    "Upwardly mobile", "Stably high"
+  ))))
+```
+
+
+```{r}
+# Forest plot for Logistic model
+p_logistic <- ggplot(logistic_results, aes(x = estimate, y = term)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "black") +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high),
+                 height = 0.2, color = "black", size = 1.5) +
+  geom_point(aes(size = 2), color = "black") +
+  #scale_x_continuous(
+    #limits = c(0, 1.5),
+    #breaks = seq(0, 1.5, by = 0.25)
+  #) +
+  scale_x_continuous(
+    limits = c(0.1, 2),
+    breaks = c(0.5, 1, 1.5,2)) +
+  coord_trans(x = "log10") +
+  labs(
+    x = "Odds Ratio (95% CI)",
+    y = NULL,
+    title = "CHARLS"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold", color = "black"),
+    axis.text = element_text(color = "black", size = 12),
+    axis.title = element_text(color = "black", size = 13),
+    panel.background = element_rect(fill = "white"),
+    panel.grid = element_blank(),
+    legend.position = "none"
+  )
+
+print(p_logistic)
+```
+
+```{r}
+# Save Logistic model plot
+jpeg("D:/edu and dementia/analysis/charls/charls logi lh.jpeg", 
+     width = 10, height = 6, units = 'in', res = 300)
+print(p_logistic)
+dev.off()
+```
+
+
+```{r}
+####cox####
+surv_obj <- Surv(time = df_dementia$event_time, event = df_dementia$event_status)
+model_dementia <- coxph(surv_obj ~ educational_mobility_pr + age + gender + hukou + 
+                          lb_status + marital_status + wealth_quartile + 
+                          soc_activity + drink_now + smoke_2011 + phy_act + n_chronic + urbanicity + height + stress + health + financial + warmth, data = df_dementia)
+summary(model_dementia)
+exp(confint(model_dementia))
+
+model_dementia_unadjusted <- coxph(surv_obj ~ educational_mobility_pr, data = df_dementia)
+summary(model_dementia_unadjusted)
+exp(confint(model_dementia_unadjusted))
+```
+
+#```{r}
+####cip####
+max_time <- max(df_dementia$event_time, na.rm = TRUE)
+print(max_time)
+
+newdata <- data.frame(
+  educational_mobility_pr = factor(levels(df_dementia$educational_mobility_pr), levels = levels(df_dementia$educational_mobility_pr)))
+
+
+fit <- survfit(model_dementia_unadjusted, newdata = newdata)
+ggsurv_obj <- ggsurvplot(fit,
+                         data = df_dementia,
+                         fun = "event",
+                         conf.int = FALSE,
+                         risk.table = FALSE,
+                         palette = "Set1",
+                         xlab = "Time (Years)",
+                         ylab = "Cumulative incidence (%)",
+                         legend.title = "Intergenerational educational trajectory",
+                         legend.labs = c("Stably low","Downward mobility", "Stably middle", "Upward mobility", "Stably high"),
+                         risk.table.height = 0.25,
+                         title = "CHARLS",
+                         break.time.by = 12,
+                         xscale = "d_y",
+                         censor = FALSE,    
+                         size = 0.7)         
+
+p_final <- ggsurv_obj$plot + 
+  theme_minimal() +  
+  scale_x_continuous(
+    breaks = seq(0, max_time, by = 12),  
+    labels = function(x) paste0(round(x / 12))  
+  ) +
+  scale_color_manual(
+    values = c("Stably low" = "#8b0000", "Downward mobility" = "#f06d6d", "Stably middle" = "#f8c8c8", "Upward mobility" = "#66cdaa", "Stably high" = "#006400"),
+    labels = c("Stably low","Downward mobility", "Stably middle", "Upward mobility", "Stably high") 
+  ) +
+  theme(
+    text = element_text(size = 14),  
+    legend.position = c(0.4, 0.8),  
+    legend.title = element_text(size = 14),  
+    legend.text = element_text(size = 12),  
+    legend.key.size = unit(0.5, "cm"),  
+    legend.background = element_rect(color = "black", size = 1, linetype = "solid")  
+  ) +
+  guides(color = guide_legend(
+    title = "Intergenerational educational trajectories",
+    title.position = "top",  
+    title.hjust = 0.5, 
+    label.position = "right",  
+    order = 1)) +
+  coord_cartesian(xlim = c(0, max_time), ylim = c(0,1))  
+
+png(file = 'D:/edu and dementia/analysis/charls/charls.png',
+    width = 1800,
+    height = 1200,
+    units = "px",
+    res = 200)
+print(p_final)
+dev.off()
+#```
+
+
+
+
+```{r}
+#forest plot
+model_results <- broom::tidy(model_dementia, conf.int = TRUE)
+
+target_var <- model_results %>%
+  filter(grepl("educational_mobility_pr", term)) %>%  
+  mutate(
+    hr = exp(estimate),  
+    hr_low = exp(conf.low),  
+    hr_high = exp(conf.high)  
+  ) %>%
+  select(term, hr, hr_low, hr_high, p.value)  
+print(target_var)
+```
+
+```{r}
+# Check the structure of target_var after all transformations
+print(target_var)
+
+# Or for more detail:
+str(target_var)
+```
+
+```{r}
+ref_row <- data.frame(
+  term = "educational_mobility_prStably low (ref)", 
+  hr = 1,                   
+  hr_low = 1,                
+  hr_high = 1,               
+  p.value = NA               
+)
+target_var <- bind_rows(ref_row, target_var)
+
+target_var <- target_var %>%
+  mutate(term = gsub("educational_mobility_pr", "", term))  
+
+target_var <- target_var %>%
+  mutate(term = case_when(
+    term == "Stably low (ref)" ~ "Stably low (ref)",  
+    term == "Downward mobility" ~ "Downwardly mobile", 
+    term == "Upward mobility" ~ "Upwardly mobile",      
+    #term == "Stably middle" ~ "Stably middle",
+    term == "Stably high" ~ "Stably high",
+    TRUE ~ term  
+  )) %>%
+  mutate(term = factor(term, levels =rev( c(
+    "Stably low (ref)",          
+    "Downwardly mobile",    
+    #"Stably middle",        
+    "Upwardly mobile",      
+    "Stably high"           
+  ))))
+```
+
+
+```{r}
+forest_plot <- ggplot(target_var, aes(x = hr, y = term)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "black") +  
+  geom_errorbarh(aes(xmin = hr_low, xmax = hr_high), 
+                 height = 0.2, color = "#007F6F", size = 1.5) +
+  geom_point(aes(size = 2), color = "#007F6F") +  
+  #scale_x_log10(  
+    #breaks = c(0.5, 1, 2), 
+    #labels = c(0.5, 1, 2)
+  #) +
+  scale_x_continuous(
+    limits = c(0.1, 2),
+    breaks = c(0.5, 1, 1.5,2)) +
+  coord_trans(x = "log10") +
+  labs(
+    x = "Hazard Ratio (95% CI)",
+    y = NULL
+  ) +
+  theme_bw() + 
+  ggtitle("China") +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold", color = "black"),
+    axis.text = element_text(color = "black", size = 12),  
+    axis.title = element_text(color = "black", size = 13), 
+    panel.background = element_rect(fill = "white"),  
+    panel.grid = element_blank(),  
+    legend.position = "none" 
+  ) 
+
+print(forest_plot)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(cowplot)
+library(broom)
+
+# Get model results
+model_results <- broom::tidy(model_dementia, conf.int = TRUE)
+
+# Filter and transform
+target_var <- model_results %>%
+  filter(grepl("educational_mobility_pr", term)) %>%  
+  mutate(
+    hr = exp(estimate),  
+    hr_low = exp(conf.low),  
+    hr_high = exp(conf.high)  
+  ) %>%
+  select(term, hr, hr_low, hr_high, p.value)
+
+# Add reference row
+ref_row <- data.frame(
+  term = "educational_mobility_prStably low (ref)", 
+  hr = 1,                   
+  hr_low = 1,                
+  hr_high = 1,               
+  p.value = NA               
+)
+target_var <- bind_rows(ref_row, target_var)
+
+# Clean term names
+target_var <- target_var %>%
+  mutate(term = gsub("educational_mobility_pr", "", term)) %>%
+  mutate(term = case_when(
+    term == "Stably low (ref)" ~ "Stably low (ref)",  
+    term == "Downward mobility" ~ "Downwardly mobile", 
+    term == "Upward mobility" ~ "Upwardly mobile",      
+    term == "Stably high" ~ "Stably high",
+    TRUE ~ term  
+  )) %>%
+  mutate(term = factor(term, levels = c(
+    "Stably low (ref)",          
+    "Downwardly mobile",    
+    "Upwardly mobile",      
+    "Stably high"           
+  )))
+
+# Prepare final data with HR/CI text and P-values
+final_data <- target_var %>%
+  mutate(
+    HR_CI_text = if_else(
+      term == "Stably low (ref)",
+      "ref (ref)",
+      sprintf("%.3f (%.3f, %.3f)", hr, hr_low, hr_high)
+    ),
+    P_text = if_else(
+      term == "Stably low (ref)",
+      "ref",
+      if_else(p.value < 0.001, "<0.001", sprintf("%.3f", p.value))
+    ),
+    row = rev(row_number())
+  )
+
+# Define y-axis settings for alignment
+y_breaks <- final_data$row
+y_limits <- c(min(y_breaks) - 0.5, max(y_breaks) + 0.5)
+
+# Common theme for table panels
+theme_table <- theme_minimal() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.margin = unit(c(5, 5, 5, 5), "pt")
+  )
+```
+
+
+```{r}
+# Panel 1: Group labels (left)
+p_labels <- ggplot(final_data, aes(y = row)) +
+  geom_text(aes(x = 0, label = term), size = 5, hjust = 0) +
+  scale_x_continuous(limits = c(0, 1)) +
+  scale_y_continuous(
+    breaks = y_breaks,
+    limits = y_limits,
+    expand = c(0, 0)
+  ) +
+  theme_table +
+  ggtitle("China") +
+  theme(plot.margin = unit(c(5, 0, 5, 5), "pt"))
+
+# Panel 2: Forest plot
+p_forest <- ggplot(final_data, aes(x = hr, y = row)) +
+  geom_point(size = 5, color = "#F53E41") +
+  geom_errorbarh(aes(xmin = hr_low, xmax = hr_high), 
+                 height = 0.3, linewidth = 1.5, color = "#F53E41") +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(0.2, 1.5), linetype = "solid", color = "gray90", linewidth = 0.5) +
+  scale_x_log10(
+    limits = c(0.2, 1.5),
+    breaks = c(0.5, 1, 1.5),
+    labels = c("0.5", "1", "1.5")
+  ) +
+  scale_y_continuous(
+    breaks = y_breaks,
+    limits = y_limits,
+    expand = c(0, 0)
+  ) +
+  xlab("Hazard Ratio (95% CI)") +
+  ylab("") +
+  theme_bw() +
+  theme(
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.x = element_text(size = 13, color = "black"),
+    axis.title.y = element_blank(),
+    axis.line.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    plot.margin = unit(c(5, 5, 5, 5), "pt")
+  )
+
+# Panel 3: HR (95% CI)
+p_hr_ci <- ggplot(final_data, aes(y = row)) +
+  geom_text(aes(x = 0, label = HR_CI_text), size = 5, hjust = 0.5) +
+  scale_x_continuous(limits = c(-0.5, 0.5)) +
+  scale_y_continuous(
+    breaks = y_breaks,
+    limits = y_limits,
+    expand = c(0, 0)
+  ) +
+  ggtitle("HR (95% CI)") +
+  theme_table
+
+# Panel 4: P values
+p_pval <- ggplot(final_data, aes(y = row)) +
+  geom_text(aes(x = 0, label = P_text), size = 5, hjust = 0.5) +
+  scale_x_continuous(limits = c(-0.5, 0.5)) +
+  scale_y_continuous(
+    breaks = y_breaks,
+    limits = y_limits,
+    expand = c(0, 0)
+  ) +
+  ggtitle("P") +
+  theme_table
+```
+
+
+```{r}
+# Combine all panels
+combined_plot <- cowplot::plot_grid(
+  p_labels,
+  p_forest,
+  p_hr_ci,
+  p_pval,
+  ncol = 4,
+  rel_widths = c(1.0, 2.4, 1.2, 0.5),
+  align = "h"
+)
+
+# Add white background and title
+final_plot <- ggdraw(combined_plot) +
+  draw_label("", x = 0.5, y = 0.98, size = 14, fontface = "bold") +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+# Display
+print(final_plot)
+```
+
+
+```{r}
+# Save the plot
+ggsave("D:/edu and dementia/analysis/charls/forest_longi_lowhigh.jpeg", 
+       plot = final_plot, 
+       width = 10, height = 4, 
+       units = 'in', dpi = 600)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+#```{r}
+ggsave(
+  "educational_trajectories_forestplot_black_white.png",
+  plot = forest_plot,
+  width = 10, height = 6, dpi = 300
+)
+#```
+
+
+```{r}
+ggsave(
+  "D:/edu and dementia/analysis/charls/charls cox lh.png",
+  plot = forest_plot,
+  width = 10, height = 6, dpi = 300
+)
+```
+
+
+```{r}
+####gender interation####
+surv_obj <- Surv(time = df_dementia$event_time, event = df_dementia$event_status)
+model_gender <- coxph(surv_obj ~ educational_mobility_pr * gender + age + hukou + 
+                          lb_status + marital_status + wealth_quartile + 
+                          soc_activity + drink_now + smoke_2011 + phy_act + n_chronic + urbanicity + height + stress + health + financial + warmth, data = df_dementia)
+summary(model_gender)
+exp(confint(model_gender))
+```
+
+```{r}
+gender_results <- broom::tidy(model_gender, conf.int = TRUE)
+
+target_gender <- gender_results %>%
+  filter(grepl("educational_mobility_pr|^gender", term)) %>%  
+  mutate(
+    hr = exp(estimate),  
+    hr_low = exp(conf.low),  
+    hr_high = exp(conf.high)  
+  ) %>%
+  select(term, hr, hr_low, hr_high, p.value)  
+print(target_gender)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-------below is unknown-------
+-------below is unknown-------
+-------below is unknown-------
+-------below is unknown-------
+
+```{r}
+# RDM
+## cluster PR of education level
+#3 categories education level
+quantiles_r <- quantile(df$percentile_rank, probs = c(0.25, 0.75))
+quantiles_p <- quantile(df$percentile_rank_parent, probs = c(0.25, 0.75))
+
+df$education_quan <- cut(df$percentile_rank,
+                             breaks = c(-Inf, quantiles_r, Inf),
+                             labels = c(1, 2, 3),
+                             right = TRUE)
+df$education_p_quan <- cut(df$percentile_rank_parent,
+                               breaks = c(-Inf, quantiles_p, Inf),
+                               labels = c(1, 2, 3),
+                               right = TRUE)
+table(df$education_quan)
+table(df$education_p_quan)
+
+print(df)
+ggplot(df, aes(x = percentile_rank)) +
+  geom_density(fill = "#0072B2", alpha = 0.8) +
+  labs(title = "Density Plot of PR Education Level",
+       x = "Percentile Rank",
+       y = "Density") +
+  theme_minimal()
+ggplot(df, aes(x = percentile_rank_parent)) +
+  geom_density(fill = "#0072B2", alpha = 0.8) +
+  labs(title = "Density Plot of Parents' PR Education Level",
+       x = "Percentile Rank",
+       y = "Density") +
+  theme_minimal()
+```
+
+
+```{r}
+#RDM
+result_pr <- mcm(Memory_Change_Rate ~ education_p_quan * education_quan, 
+                 data = df,
+                 origin = "education_p_quan",
+                 destination = "education_quan")
+mobility_estimates_pr <- result_pr$mobility_estimates
+```
+
+
+```{r}
+plot_data_pr <- data.frame(
+  Desti1 = c(NA, -0.00201873570390024, 0.0381616344644122),
+  Desti2 = c(0.0201866964458988, NA, 0.0159562023146132),
+  Desti3 = c(0.024434454346587, 0.011708444413925, NA)
+)
+rownames(plot_data_pr) <- c("Orig1", "Orig2", "Orig3")
+data_long_pr_a <- melt(as.matrix(plot_data_pr))
+```
+
+
+```{r}
+# women
+result_pr_f <- mcm(Memory_Change_Rate ~ education_p_quan * education_quan, 
+                   data = df[df$Gender == "Women",],
+                   origin = "education_p_quan",
+                   destination = "education_quan")
+
+mobility_estimates_pr_f <- result_pr_f$mobility_estimates
+plot_data_pr <- data.frame(
+  Desti1 = c(NA, 0.0189687376577131, 0.0272384868793166),
+  Desti2 = c(0.0397296962391971, NA, 0.00647752829783256),
+  Desti3 = c(0.0292503733513898, 0.0169568511856399, NA)
+)
+rownames(plot_data_pr) <- c("Orig1", "Orig2", "Orig3")
+data_long_pr_w <- melt(as.matrix(plot_data_pr))
+```
+
+
+```{r}
+# men
+set.seed(1006)
+result_pr_m <- mcm(Memory_Change_Rate ~ education_p_quan * education_quan, 
+                   data = df[df$Gender == "Men",],
+                   origin = "education_p_quan",
+                   destination = "education_quan")
+
+mobility_estimates_pr_m <- result_pr_m$mobility_estimates
+plot_data_pr <- data.frame(
+  Desti1 = c(NA, -0.0218139235307176, 0.0262087101431262),
+  Desti2 = c(-0.00932436275744907, NA, 0.0137191493698576),
+  Desti3 = c(0.0258302301996966, -0.021435443587288, NA)
+)
+rownames(plot_data_pr) <- c("Orig1", "Orig2", "Orig3")
+data_long_pr_m <- melt(as.matrix(plot_data_pr))
+```
+
+
+```{r}
+#extract data
+write.csv(df,"D:/edu and dementia/analysis/charls/charls_p.csv")
+
+```
+

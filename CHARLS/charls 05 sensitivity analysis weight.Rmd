@@ -1,0 +1,554 @@
+
+```{r}
+library(tableone)
+library(kableExtra)
+library(CMAverse)
+library(survival)
+library(dplyr)
+library(lubridate)
+library(sjPlot)
+
+
+df <- read.csv("D:/edu and dementia/analysis/charls/imputed_charls.csv")
+```
+
+
+```{r}
+#events_status
+df <- df %>%
+  mutate(
+    event_status = case_when(
+      (dementia2 == 1 | dementia3 == 1 | dementia4 == 1) ~ 1,
+      is.na(dementia2) & is.na(dementia3) & is.na(dementia4) ~ NA_real_,
+      TRUE ~ 0  
+    )
+  )
+```
+
+```{r}
+#death date, date is set to 15 (mid-month) due to unavailability
+df$death_date <- make_date(year = df$death_year, month = df$death_month, day = 15)
+```
+
+
+```{r}
+#drop rows do not have any dementia records (n = 10661)
+df_dementia <- df[!is.na(df$event_status),]
+```
+
+
+```{r}
+#NOTE:The logic behind calculating event_date is as follows: For event_status == 0 (no event), if inv_date14 is not missing, the event_date is set to inv_date14. If inv_date14 is missing but death_date exists and is earlier than the minimum of inv_date14, the event_date is set to death_date. If inv_date14 is missing and the death_date condition does not apply, the event_date is imputed using the median of inv_date14 from available non-missing values. If neither condition applies, the event_date is set to NA. For event_status == 1 (event occurred), if dementia_2012 == 1, the event_date is set to inv_date11; if dementia_2014 == 1, the event_date is set to inv_date12; if dementia_2016 == 1, the event_date is set to inv_date13; and if dementia_2018 == 1, the event_date is set to inv_date14. If none of these conditions apply, the event_date is set to NA. This approach ensures the event_date is logically determined based on available data and handles missing values appropriately. Temporary columns used for the calculation of the minimum and median of inv_date14 are removed at the end.
+```
+
+```{r}
+df_dementia <- df_dementia %>%
+  mutate(
+    min_riwmid_w4 = min(riwmid_w4, na.rm = TRUE),
+    median_riwmid_w4 = median(riwmid_w4, na.rm = TRUE),
+    event_date = case_when(
+      event_status == 0 & !is.na(riwmid_w4) ~ as.Date(riwmid_w4, origin = "1960-01-01"),  
+      event_status == 0 & !is.na(death_date) & death_date < min_riwmid_w4 ~ as.Date(death_date, origin = "1960-01-01"),  
+      event_status == 0 & is.na(riwmid_w4) ~ as.Date(median_riwmid_w4, origin = "1960-01-01"),  
+      event_status == 0 ~ as.Date(NA),  
+      event_status == 1 ~ as.Date(
+        coalesce(
+          ifelse(dementia2 == 1, riwmid_w2, NA), 
+          ifelse(dementia3 == 1, riwmid_w3, NA), 
+          ifelse(dementia4 == 1, riwmid_w4, NA)
+        ), origin = "1960-01-01"
+      ),
+      TRUE ~ as.Date(NA)
+    )
+  ) %>%
+  dplyr::select(-min_riwmid_w4, -median_riwmid_w4)
+
+
+df_dementia <- df_dementia %>%
+  mutate(
+    event_time = as.numeric(difftime(event_date, as.Date(riwmid_w1, origin = "1960-01-01"), units = "days")) / 30.44)
+```
+
+```{r}
+#reference group
+df_dementia$educational_mobility_pr <- factor(df_dementia$educational_mobility_pr, 
+                                    levels = c("Stably low","Downward mobility", "Upward mobility", "Stably high"))
+df_dementia$educational_mobility_pr <- relevel(df_dementia$educational_mobility_pr, ref = "Stably low")
+df_dementia$gender <- relevel(factor(df_dementia$gender), ref = "men")
+df_dementia$wealth_quartile <- relevel(factor(df_dementia$wealth_quartile), ref = "1")
+df_dementia$n_chronic <- relevel(factor(df_dementia$n_chronic), ref = "0 chronic")
+df_dementia$soc_activity <- relevel(factor(df_dementia$soc_activity), ref = "0")
+df_dementia$phy_act <- relevel(factor(df_dementia$phy_act), ref = "0")
+df_dementia$drink_now <- relevel(factor(df_dementia$drink_now), ref = "0")
+df_dementia$smoke_2011 <- relevel(factor(df_dementia$smoke_2011), ref = "non smoker")
+df_dementia$education_quan <- relevel(factor(df_dementia$education_quan), ref = "1")
+df_dementia$education_p_quan <- relevel(factor(df_dementia$education_p_quan), ref = "1")
+df_dementia$hukou <- factor(df_dementia$hukou,
+                   levels = c(1, 0),
+                   labels = c("agri", "non-agri"))
+df_dementia$hukou <- relevel(df_dementia$hukou, ref = "agri")
+```
+
+
+```{r}
+table(df_dementia$dementia1,exclude = NULL)
+```
+
+```{r}
+table(df_dementia$education_quan,df_dementia$years_edu,exclude = NULL)
+table(df_dementia$education_p_quan,df_dementia$highest_education_parent,exclude = NULL)
+```
+
+```{r}
+df_weights <- df_dementia %>%
+  filter(!is.na(s_weight) & s_weight > 0)
+```
+
+
+```{r}
+##normalise sampling weights##
+df_weights$s_weight_norm = df_weights$s_weight / sum(df_weights$s_weight) * nrow(df_weights)
+```
+
+```{r}
+####model
+library(survival)
+library(survminer)
+```
+
+```{r}
+####sampling weight####
+cat("Sampling weights summary:\n")
+cat("Mean weight:", mean(df_weights$s_weight_norm, na.rm = TRUE), "\n")
+cat("Range:", range(df_weights$s_weight_norm, na.rm = TRUE), "\n")
+cat("Min weight:", min(df_weights$s_weight_norm, na.rm = TRUE), "\n")
+
+# Check for any remaining invalid weights
+invalid_weights <- sum(df_weights$s_weight_norm <= 0, na.rm = TRUE)
+cat("Number of invalid (<=0) weights:", invalid_weights, "\n")
+```
+
+```{r}
+# Remove any remaining invalid weights
+df_weights <- df_weights %>% filter(s_weight_norm > 0)
+```
+
+
+```{r}
+# Cox model with sampling weights
+surv_obj_weights <- Surv(time = df_weights$event_time, event = df_weights$event_status)
+model_sw <- coxph(surv_obj_weights ~ educational_mobility_pr + age + gender + hukou + 
+                         lb_status + marital_status + wealth_quartile + 
+                         soc_activity + drink_now + smoke_2011 + phy_act + n_chronic + 
+                         urbanicity + height + stress + health + financial + warmth, 
+                       data = df_weights, weights = s_weight_norm)
+
+cat("\nModel Summary (SA6: Sampling Weights):\n")
+print(summary(model_sw))
+```
+
+
+```{r}
+#forest plot
+model_results_sw <- broom::tidy(model_sw, conf.int = TRUE)
+
+target_var <- model_results_sw %>%
+  filter(grepl("educational_mobility_pr", term)) %>%  
+  mutate(
+    hr = exp(estimate),  
+    hr_low = exp(conf.low),  
+    hr_high = exp(conf.high)  
+  ) %>%
+  select(term, hr, hr_low, hr_high, p.value)  
+print(target_var)
+```
+
+```{r}
+# Check the structure of target_var after all transformations
+print(target_var)
+
+# Or for more detail:
+str(target_var)
+```
+
+```{r}
+ref_row <- data.frame(
+  term = "educational_mobility_prStably low (ref)", 
+  hr = 1,                   
+  hr_low = 1,                
+  hr_high = 1,               
+  p.value = NA               
+)
+target_var <- bind_rows(ref_row, target_var)
+
+target_var <- target_var %>%
+  mutate(term = gsub("educational_mobility_pr", "", term))  
+
+target_var <- target_var %>%
+  mutate(term = case_when(
+    term == "Stably low (ref)" ~ "Stably low (ref)",  
+    term == "Downward mobility" ~ "Downwardly mobile", 
+    term == "Upward mobility" ~ "Upwardly mobile",      
+    #term == "Stably middle" ~ "Stably middle",
+    term == "Stably high" ~ "Stably high",
+    TRUE ~ term  
+  )) %>%
+  mutate(term = factor(term, levels =rev( c(
+    "Stably low (ref)",          
+    "Downwardly mobile",    
+    #"Stably middle",        
+    "Upwardly mobile",      
+    "Stably high"           
+  ))))
+```
+
+
+```{r}
+forest_plot <- ggplot(target_var, aes(x = hr, y = term)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "black") +  
+  geom_errorbarh(aes(xmin = hr_low, xmax = hr_high), 
+                 height = 0.2, color = "#007F6F", size = 1.5) +
+  geom_point(aes(size = 2), color = "#007F6F") +  
+  #scale_x_log10(  
+    #breaks = c(0.5, 1, 2), 
+    #labels = c(0.5, 1, 2)
+  #) +
+  scale_x_continuous(
+    limits = c(0.1, 2),
+    breaks = c(0.5, 1, 1.5,2)) +
+  coord_trans(x = "log10") +
+  labs(
+    x = "Hazard Ratio (95% CI)",
+    y = NULL
+  ) +
+  theme_bw() + 
+  ggtitle("China") +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold", color = "black"),
+    axis.text = element_text(color = "black", size = 12),  
+    axis.title = element_text(color = "black", size = 13), 
+    panel.background = element_rect(fill = "white"),  
+    panel.grid = element_blank(),  
+    legend.position = "none" 
+  ) 
+
+print(forest_plot)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(cowplot)
+library(broom)
+
+# Get model results
+model_results <- broom::tidy(model_sw, conf.int = TRUE)
+
+# Filter and transform
+target_var <- model_results %>%
+  filter(grepl("educational_mobility_pr", term)) %>%  
+  mutate(
+    hr = exp(estimate),  
+    hr_low = exp(conf.low),  
+    hr_high = exp(conf.high)  
+  ) %>%
+  select(term, hr, hr_low, hr_high, p.value)
+
+# Add reference row
+ref_row <- data.frame(
+  term = "educational_mobility_prStably low (ref)", 
+  hr = 1,                   
+  hr_low = 1,                
+  hr_high = 1,               
+  p.value = NA               
+)
+target_var <- bind_rows(ref_row, target_var)
+
+# Clean term names
+target_var <- target_var %>%
+  mutate(term = gsub("educational_mobility_pr", "", term)) %>%
+  mutate(term = case_when(
+    term == "Stably low (ref)" ~ "Stably low (ref)",  
+    term == "Downward mobility" ~ "Downwardly mobile", 
+    term == "Upward mobility" ~ "Upwardly mobile",      
+    term == "Stably high" ~ "Stably high",
+    TRUE ~ term  
+  )) %>%
+  mutate(term = factor(term, levels = c(
+    "Stably low (ref)",          
+    "Downwardly mobile",    
+    "Upwardly mobile",      
+    "Stably high"           
+  )))
+
+# Prepare final data with HR/CI text and P-values
+final_data <- target_var %>%
+  mutate(
+    HR_CI_text = if_else(
+      term == "Stably low (ref)",
+      "ref (ref)",
+      sprintf("%.3f (%.3f, %.3f)", hr, hr_low, hr_high)
+    ),
+    P_text = if_else(
+      term == "Stably low (ref)",
+      "ref",
+      if_else(p.value < 0.001, "<0.001", sprintf("%.3f", p.value))
+    ),
+    row = rev(row_number())
+  )
+
+# Define y-axis settings for alignment
+y_breaks <- final_data$row
+y_limits <- c(min(y_breaks) - 0.5, max(y_breaks) + 0.5)
+
+# Common theme for table panels
+theme_table <- theme_minimal() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.margin = unit(c(5, 5, 5, 5), "pt")
+  )
+```
+
+
+```{r}
+# Panel 1: Group labels (left)
+p_labels <- ggplot(final_data, aes(y = row)) +
+  geom_text(aes(x = 0, label = term), size = 5, hjust = 0) +
+  scale_x_continuous(limits = c(0, 1)) +
+  scale_y_continuous(
+    breaks = y_breaks,
+    limits = y_limits,
+    expand = c(0, 0)
+  ) +
+  theme_table +
+  ggtitle("China") +
+  theme(plot.margin = unit(c(5, 0, 5, 5), "pt"))
+
+# Panel 2: Forest plot
+p_forest <- ggplot(final_data, aes(x = hr, y = row)) +
+  geom_point(size = 5, color = "#F53E41") +
+  geom_errorbarh(aes(xmin = hr_low, xmax = hr_high), 
+                 height = 0.3, linewidth = 1.5, color = "#F53E41") +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(0.2, 1.5), linetype = "solid", color = "gray90", linewidth = 0.5) +
+  scale_x_log10(
+    limits = c(0.2, 1.5),
+    breaks = c(0.5, 1, 1.5),
+    labels = c("0.5", "1", "1.5")
+  ) +
+  scale_y_continuous(
+    breaks = y_breaks,
+    limits = y_limits,
+    expand = c(0, 0)
+  ) +
+  xlab("Hazard Ratio (95% CI)") +
+  ylab("") +
+  theme_bw() +
+  theme(
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.x = element_text(size = 13, color = "black"),
+    axis.title.y = element_blank(),
+    axis.line.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    plot.margin = unit(c(5, 5, 5, 5), "pt")
+  )
+
+# Panel 3: HR (95% CI)
+p_hr_ci <- ggplot(final_data, aes(y = row)) +
+  geom_text(aes(x = 0, label = HR_CI_text), size = 5, hjust = 0.5) +
+  scale_x_continuous(limits = c(-0.5, 0.5)) +
+  scale_y_continuous(
+    breaks = y_breaks,
+    limits = y_limits,
+    expand = c(0, 0)
+  ) +
+  ggtitle("HR (95% CI)") +
+  theme_table
+
+# Panel 4: P values
+p_pval <- ggplot(final_data, aes(y = row)) +
+  geom_text(aes(x = 0, label = P_text), size = 5, hjust = 0.5) +
+  scale_x_continuous(limits = c(-0.5, 0.5)) +
+  scale_y_continuous(
+    breaks = y_breaks,
+    limits = y_limits,
+    expand = c(0, 0)
+  ) +
+  ggtitle("P") +
+  theme_table
+```
+
+
+```{r}
+# Combine all panels
+combined_plot <- cowplot::plot_grid(
+  p_labels,
+  p_forest,
+  p_hr_ci,
+  p_pval,
+  ncol = 4,
+  rel_widths = c(1.0, 2.4, 1.2, 0.5),
+  align = "h"
+)
+
+# Add white background and title
+final_plot <- ggdraw(combined_plot) +
+  draw_label("", x = 0.5, y = 0.98, size = 14, fontface = "bold") +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+# Display
+print(final_plot)
+```
+
+0.inap.
+1.resp, alive
+4.nr, alive
+5.nr, died this wv
+6.nr, died prev wv
+9.nr, dk if alive or died
+```{r}
+####ipcw####
+# Create censoring indicators for each wave (baseline is r1iwstat)
+# iwstat coding: 1=interviewed, 5=deceased, other values (4,7,9)=lost to follow-up
+df_ipcw <- df_dementia %>%
+  mutate(
+    # Wave 2013
+    censored_wave2013 = ifelse(r2iwstat == 5, 1, ifelse(r2iwstat == 1, 0, NA)),
+    lost_wave2013 = ifelse(r2iwstat == 9 | r2iwstat == 7 | r2iwstat == 4, 1, 
+                           ifelse(r2iwstat == 1, 0, NA)),
+    
+    # Wave 2015
+    censored_wave2015 = ifelse(r3iwstat == 5, 1, ifelse(r3iwstat == 1, 0, NA)),
+    lost_wave2015 = ifelse(r3iwstat == 9 | r3iwstat == 7 | r3iwstat == 4, 1, 
+                           ifelse(r3iwstat == 1, 0, NA)),
+    
+    # Wave 2018
+    censored_wave2018 = ifelse(r4iwstat == 5, 1, ifelse(r4iwstat == 1, 0, NA)),
+    lost_wave2018 = ifelse(r4iwstat == 9 | r4iwstat == 7 | r4iwstat == 4, 1, 
+                           ifelse(r4iwstat == 1, 0, NA))
+  )
+```
+
+```{r}
+table(df_ipcw$r2iwstat)
+table(df_ipcw$r3iwstat)
+table(df_ipcw$r4iwstat)
+```
+
+
+```{r}
+# Model censoring and lost-to-follow-up for each wave
+waves <- c(2013, 2015, 2018)
+
+for (wave in waves) {
+  censored_var <- paste0("censored_wave", wave)
+  lost_var <- paste0("lost_wave", wave)
+  prob_censored_var <- paste0("prob_censored_", wave)
+  prob_lost_var <- paste0("prob_lost_", wave)
+  prob_remain_var <- paste0("prob_remain_", wave)
+  
+  # Model censoring (death)
+  model_censoring <- glm(as.formula(paste(censored_var, "~ age + gender + hukou + education_quan + 
+                                           highest_education_parent + marital_status + wealth_quartile + 
+                                           smoke_2011 + n_chronic + urbanicity + health + 
+                                           financial + warmth + phy_act")),
+                         data = df_ipcw, family = binomial, na.action = na.exclude, control = glm.control(maxit = 100))
+  
+  # Model lost to follow-up
+  model_lost <- glm(as.formula(paste(lost_var, "~ age + gender + hukou + education_quan + 
+                                           highest_education_parent + marital_status + wealth_quartile + 
+                                           smoke_2011 + n_chronic + urbanicity + health + 
+                                           financial + warmth + phy_act")),
+                    data = df_ipcw, family = binomial, na.action = na.exclude, control = glm.control(maxit = 100))
+  
+  # Check for convergence and separation issues
+  if (!model_censoring$converged) {
+    warning(paste("Wave", wave, "censoring model did not converge"))
+  }
+  if (!model_lost$converged) {
+    warning(paste("Wave", wave, "lost model did not converge"))
+  }
+  
+  # Predict probabilities
+  df_ipcw[[prob_censored_var]] <- predict(model_censoring, type = "response", newdata = df_ipcw)
+  df_ipcw[[prob_lost_var]] <- predict(model_lost, type = "response", newdata = df_ipcw)
+  
+  # Probability of remaining in study
+  df_ipcw[[prob_remain_var]] <- (1 - df_ipcw[[prob_censored_var]]) * (1 - df_ipcw[[prob_lost_var]])
+}
+
+# Calculate cumulative IPCW weights
+df_ipcw <- df_ipcw %>%
+  mutate(
+    ipcw_2013 = 1 / prob_remain_2013,
+    ipcw_2015 = 1 / (prob_remain_2013 * prob_remain_2015),
+    ipcw_2018 = 1 / (prob_remain_2013 * prob_remain_2015 * prob_remain_2018)
+  )
+
+# Use the final (2018) cumulative weight and trim extreme weights
+q01_weight <- quantile(df_ipcw$ipcw_2018, probs = 0.01, na.rm = TRUE)
+q99_weight <- quantile(df_ipcw$ipcw_2018, probs = 0.99, na.rm = TRUE)
+df_ipcw$ipcw_trimmed <- pmin(pmax(df_ipcw$ipcw_2018, q01_weight), q99_weight)
+
+cat("IPCW Summary:\n")
+cat("Mean weight:", mean(df_ipcw$ipcw_trimmed, na.rm = TRUE), "\n")
+cat("Range:", range(df_ipcw$ipcw_trimmed, na.rm = TRUE), "\n")
+cat("SD:", sd(df_ipcw$ipcw_trimmed, na.rm = TRUE), "\n")
+
+# Summary statistics
+cat("N with weights:", sum(!is.na(df_ipcw$ipcw_trimmed)), "\n")
+
+# Check distribution of predicted probabilities
+cat("\n=== Predicted Probability Ranges ===\n")
+cat("Censored 2013:", range(df_ipcw$prob_censored_2013, na.rm = TRUE), "\n")
+cat("Lost 2013:", range(df_ipcw$prob_lost_2013, na.rm = TRUE), "\n")
+cat("Censored 2015:", range(df_ipcw$prob_censored_2015, na.rm = TRUE), "\n")
+cat("Lost 2015:", range(df_ipcw$prob_lost_2015, na.rm = TRUE), "\n")
+cat("Censored 2018:", range(df_ipcw$prob_censored_2018, na.rm = TRUE), "\n")
+cat("Lost 2018:", range(df_ipcw$prob_lost_2018, na.rm = TRUE), "\n")
+```
+
+the warning can be ignored as wave 2013 had no censored obs
+
+```{r}
+# Cox model with IPCW
+surv_obj_ipcw <- Surv(time = df_ipcw$event_time, event = df_ipcw$event_status)
+model_ipcw <- coxph(surv_obj_ipcw ~ educational_mobility_pr + age + gender + hukou + 
+                         lb_status + marital_status + wealth_quartile + 
+                         soc_activity + drink_now + smoke_2011 + phy_act + n_chronic + 
+                         urbanicity + height + stress + health + financial + warmth, 
+                    data = df_ipcw, weights = ipcw_trimmed)
+
+cat("\nModel Summary (SA5: IPCW):\n")
+print(summary(model_ipcw))
+
+ipcw_results <- broom::tidy(model_ipcw, conf.int = TRUE) %>%
+  filter(grepl("educational_mobility_pr", term)) %>%
+  mutate(
+    hr = exp(estimate),
+    hr_low = exp(conf.low),
+    hr_high = exp(conf.high),
+    analysis = "SA5: IPCW"
+  ) %>%
+  select(term, hr, hr_low, hr_high, p.value, analysis)
+
+print(ipcw_results)
+
+```
+
+
+
