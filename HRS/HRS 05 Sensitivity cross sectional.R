@@ -284,8 +284,7 @@ library(sjPlot)
 tab_model(model_main)
 
 
-
-####====sjPlot####========== SA 1: Using 1.5 SD CUTOFF ==========####
+========== SA 1: Using 1.5 SD CUTOFF ==========####
 classify_dementia_1.5sd <- function(cog_scores, edu_levels) {
   dementia <- rep(NA_real_, length(cog_scores))
   edu_unique <- unique(edu_levels[!is.na(edu_levels)])
@@ -374,6 +373,7 @@ model_complete <- glm(dementia_2010 ~ educational_mobility_pr + age + gender + R
                       data = df_cs_complete, family = binomial(link = "logit"))
 
 tab_model(model_complete)
+
 
 
 
