@@ -614,10 +614,3 @@ complete_results <- broom::tidy(model_complete, conf.int = TRUE) %>%
   select(term, hr, hr_low, hr_high, p.value, analysis)
 
 print(complete_results)
-
-####========== COMBINE ALL RESULTS ==========####
-
-cat("\n\n========== SUMMARY OF ALL ANALYSES ==========\n")
-
-all_results <- bind_rows(main_results, sa1_results, ipcw_results, weights_results, complete_results)
-print(all_results)
