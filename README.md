@@ -1,1 +1,2 @@
-# Educational-trajectories-and-dementia-association-and-mediating-pathway-in-the-US-and-China
+# Intergenerational educational trajectories and dementia: association and mediating pathway in the United States and China, 2010–2021
+This project focuses on social epidemiology and public health, investigating the association between intergenerational educational trajectories and dementia risk, as well as underlying mediating pathways, across the United States and China. Using data from the US Health and Retirement Study (HRS) and China Health and Retirement Longitudinal Study (CHARLS) spanning 2010-2021, we employed cross-sectional logistic regression and longitudinal Cox proportional hazards models for analysis.
