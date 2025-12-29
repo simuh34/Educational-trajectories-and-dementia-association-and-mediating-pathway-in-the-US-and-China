@@ -103,14 +103,6 @@ df_dementia$phy_act <- factor(df_dementia$phy_act)
 df_dementia$soc_activity2010 <- factor(df_dementia$soc_activity2010)
 df_dementia$depression <- factor(df_dementia$depression)
 
-####table - baseline 2010
-t1 = CreateTableOne(vars = c("age","gender","education_quan","education_p_quan","educational_mobility_pr", "lb_status","marital_status","wealth_quartile","drink_now","smoking","n_chronic_category","urbanicity","Race","height2010","stress","health","financial","warmth","us_born","phy_act", "soc_activity2010","depression"),   
-                    data=df_dementia)
-print(t1, showAllLevels = TRUE, catDigits=2, printToggle = FALSE, nonnormal = c("height2010","age")) %>%
-  knitr::kable(caption = "Descriptive charateristics at Baseline 2010", 
-               booktabs = T, linesep = '') %>% 
-  kable_styling(latex_options = "hold_position")
-
 ####model - Cox proportional hazard model (baseline 2010)
 library(survival)
 library(survminer)
@@ -200,72 +192,4 @@ model_dementia_interaction <- coxph(surv_obj ~ educational_mobility_pr * gender 
 summary(model_dementia_interaction)
 exp(confint(model_dementia_interaction))
 
-
-####Logistic Regression Model (baseline 2010)
-# Build Logistic regression model
-logistic_model <- glm(event_status ~ 
-                        educational_mobility_pr + age + gender + Race + 
-                        lb_status + marital_status + wealth_quartile + drink_now + smoking + n_chronic_category + urbanicity + height2010 + stress + health + financial + warmth + phy_act + soc_activity2010,
-                      data = df_dementia,
-                      family = binomial(link = "logit"))
-
-# Check Logistic model results
-cat("\n========== Logistic Regression Model Results (Baseline 2010) ==========\n")
-print(summary(logistic_model))
-tab_model(logistic_model)
-
-# Extract educational mobility results from Logistic model
-logistic_results <- tidy(logistic_model, conf.int = TRUE, exponentiate = TRUE) %>%
-  filter(term %in% c(
-    "educational_mobility_prDownward mobility",
-    "educational_mobility_prUpward mobility",
-    "educational_mobility_prStably high"
-  )) %>%
-  mutate(term = recode(term,
-                       "educational_mobility_prDownward mobility" = "Downwardly mobile",
-                       "educational_mobility_prUpward mobility" = "Upwardly mobile",
-                       "educational_mobility_prStably high" = "Stably high"
-  ))
-
-# Add reference group
-logistic_results <- bind_rows(
-  tibble(term = "Stably low (ref)", estimate = 1, conf.low = 1, conf.high = 1),
-  logistic_results
-) %>%
-  mutate(term = factor(term, levels = rev(c(
-    "Stably low (ref)", "Downwardly mobile", 
-    "Upwardly mobile", "Stably high"
-  ))))
-
-# Forest plot for Logistic model
-p_logistic <- ggplot(logistic_results, aes(x = estimate, y = term)) +
-  geom_vline(xintercept = 1, linetype = "dashed", color = "black") +
-  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high),
-                 height = 0.2, color = "black", size = 1.5) +
-  geom_point(aes(size = 2), color = "black") +
-  scale_x_continuous(
-    limits = c(0.1, 2),
-    breaks = c(0.5, 1, 1.5, 2)) +
-  coord_trans(x = "log10") +
-  labs(
-    x = "Odds Ratio (95% CI)",
-    y = NULL,
-    title = "HRS (Baseline 2010, Follow-up 2012-2018)"
-  ) +
-  theme_bw() +
-  theme(
-    plot.title = element_text(hjust = 0.5, size = 14, face = "bold", color = "black"),
-    axis.text = element_text(color = "black", size = 12),
-    axis.title = element_text(color = "black", size = 13),
-    panel.background = element_rect(fill = "white"),
-    panel.grid = element_blank(),
-    legend.position = "none"
-  )
-
-print(p_logistic)
-
-jpeg("D:\\R project\\Educational Mobility and dementia\\Analysis\\HRS\\logistic_hrs_long_lowhigh_2010baseline.jpeg", 
-     width = 10, height = 6, units = 'in', res = 300)
-print(p_logistic)
-dev.off()
 
