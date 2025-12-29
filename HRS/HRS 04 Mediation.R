@@ -59,7 +59,6 @@ imputed_data <- complete(mice_mod)
 common_cols <- intersect(names(df_dementia), names(imputed_data))
 df_dementia[common_cols] <- imputed_data[common_cols]
 
-# 创建二分类中介变量
 df_dementia$married <- ifelse(df_dementia$marital_status %in% c("married/partnered"), 1, 0)
 df_dementia$drinking_now <- ifelse(df_dementia$drink_now == 1, 1, 0)
 df_dementia$smoking_now <- ifelse(df_dementia$smoking == "current smoker", 1, 0)
@@ -70,7 +69,6 @@ df_dementia$depression <- ifelse(df_dementia$cesd2010 >= 3, 1, 0)
 df_dementia$lb_status <- ifelse(df_dementia$lb_status %in% c("fulltime_employed"), 1, 0)
 df_dementia$phy_act <- ifelse(df_dementia$phy_act == 1, 1, 0)
 
-# 创建对比组变量
 df_dementia$downward_vs_low <- ifelse(df_dementia$educational_mobility_pr == "Downward mobility", 1, 
                                       ifelse(df_dementia$educational_mobility_pr == "Stably low", 0, NA))
 df_dementia$upward_vs_low <- ifelse(df_dementia$educational_mobility_pr == "Upward mobility", 1, 
@@ -82,7 +80,6 @@ df_downward <- df_dementia[!is.na(df_dementia$downward_vs_low), ]
 df_upward <- df_dementia[!is.na(df_dementia$upward_vs_low), ]
 df_high <- df_dementia[!is.na(df_dementia$high_vs_low), ]
 
-# 协变量（添加了urbanicity和us_born）
 covariates <- c("age", "gender", "Race", "urbanicity", "height2008", 
                 "stress", "health", "financial", "warmth", "us_born")
 
@@ -125,7 +122,6 @@ analyze_mediation <- function(data, exposure, mediator, cvs, n_boot = 50) {
   ))
 }
 
-# 9个中介变量列表
 mediators_list <- c("married", "drinking_now", "smoking_now", "soc_act", 
                     "high_wealth", "multiple_chronic", "depression", 
                     "phy_act", "lb_status")
@@ -172,6 +168,6 @@ for (comp in comparisons) {
   }
 }
 
-# 查看结果
 print(results_df)
+
 
