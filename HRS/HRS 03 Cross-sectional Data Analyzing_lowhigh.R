@@ -42,19 +42,15 @@ library(survminer)
 
 # Cross-sectional model using baseline 2010 cognitive function
 model_cognition_2012 <- glm(cogfunction2010_dementia ~ educational_mobility_pr + age + gender + Race + 
-                              lb_status + marital_status +  
-                              drink_now + smoking + n_chronic_category + 
-                              urbanicity + height2010 + stress + health + financial + warmth + us_born + phy_act, 
+                             + height2010 + stress + health + financial + warmth + us_born, 
                             data = df_dementia,
                             family = binomial(link = "logit"))
 summary(model_cognition_2012)
 tab_model(model_cognition_2012)
 
 #gender interaction
-model_cognition_2012_gender <- glm(cogfunction2010_dementia ~ educational_mobility_pr * gender + age  + Race + 
-                              lb_status + marital_status +  
-                              drink_now + smoking + n_chronic_category + 
-                              urbanicity + height2010 + stress + health + financial + warmth + us_born + phy_act, 
+model_cognition_2012_gender <- glm(cogfunction2010_dementia ~educational_mobility_pr + age + gender + Race + 
+                             + height2010 + stress + health + financial + warmth + us_born,
                             data = df_dementia,
                             family = binomial(link = "logit"))
 
@@ -103,4 +99,5 @@ print(xsec_2012)
 
 jpeg("D:\\R project\\Educational Mobility and dementia\\Analysis\\HRS\\hrs_cross_sectional_dementia_lowhigh_2010baseline.jpeg", width = 10, height = 6, units = 'in', res = 300)
 print(xsec_2012)
+
 dev.off()
